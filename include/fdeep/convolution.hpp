@@ -72,30 +72,17 @@ inline convolution_filter_matrices generate_im2col_single_filter_matrix(
     return generate_im2col_filter_matrix(filter_vec(1, filter));
 }
 
-inline tensor convolve_accumulative(
+inline tensor init_conv_output_tensor(
     std::size_t out_height,
     std::size_t out_width,
-    std::size_t strides_y,
-    std::size_t strides_x,
-    const convolution_filter_matrices& filter_mat,
-    const tensor& in)
+    std::size_t out_depth,
+    std::size_t rank,
+    const convolution_filter_matrices& filter_mat)
 {
-    const tensor& filter_mats = filter_mat.filter_mats_;
-    const auto f_height = filter_mat.filter_shape_.height_;
-    const auto f_width = filter_mat.filter_shape_.width_;
-    const auto f_depth = filter_mat.filter_shape_.depth_;
-    const auto out_depth = filter_mat.filter_count_;
-
-    assertion(f_depth == in.shape().depth_, "filter depth does not match input");
-    assertion(filter_mats.shape().size_dim_4_ == f_height, "incorrect number of filter levels in y direction");
-    assertion(out_width == (in.shape().width_ - f_width) / strides_x + 1, "output width does not match");
-    assertion(out_depth == filter_mat.biases_.size(), "invlid bias count");
-
     tensor output(tensor_shape_with_changed_rank(
             tensor_shape(out_height, out_width, out_depth),
-            in.shape().rank()),
+            rank),
         static_cast<float_type>(0));
-
     if (filter_mat.use_bias_) {
         const auto bias_ptr = &filter_mat.biases_.front();
         const auto bias_ptr_end = bias_ptr + out_depth;
@@ -108,13 +95,56 @@ inline tensor convolve_accumulative(
             }
         }
     }
+    return output;
+}
 
-    using MappedColMajorMatrixXfUnaligned = Eigen::Map<ColMajorMatrixXf, Eigen::Unaligned>;
-    using MappedColMajorMatrixXfUnalignedOuterStride = Eigen::Map<ColMajorMatrixXf, Eigen::Unaligned, Eigen::OuterStride<>>;
-    
+inline Eigen::Map<ColMajorMatrixXf, Eigen::Unaligned, Eigen::OuterStride<>> get_im2col_mapping(
+    const tensor& in,
+    std::size_t f_width,
+    std::size_t f_depth,
+    std::size_t strides_x,
+    std::size_t out_width,
+    std::size_t y,
+    std::size_t y_filt)
+{
+    // To avoid using too much RAM, the input tensor is not materializezd
+    // as an actual im2col matrix, but instead the too-small outer stride
+    // of the matrix mapping is utilized to achieve the overlap the receptive fields.
+    return Eigen::Map<ColMajorMatrixXf, Eigen::Unaligned, Eigen::OuterStride<>>(
+            const_cast<float_type*>(&in.get_ref_ignore_rank(tensor_pos(0, 0, y + y_filt, 0, 0))),
+            static_cast<EigenIndex>(f_width * f_depth),
+            static_cast<EigenIndex>(out_width),
+            Eigen::OuterStride<>(static_cast<EigenIndex>(f_depth * strides_x)));
+}
+
+inline tensor convolve_accumulative(
+    std::size_t out_height,
+    std::size_t out_width,
+    std::size_t strides_y,
+    std::size_t strides_x,
+    const convolution_filter_matrices& filter_mat,
+    const tensor& in)
+{
+    // Using the im2col method, the convolution is expressed as GEMMs for performance.
+    // https://stackoverflow.com/questions/16798888/2-d-convolution-as-a-matrix-matrix-multiplication
+    // https://github.com/tensorflow/tensorflow/blob/a0d784bdd31b27e013a7eac58a86ba62e86db299/tensorflow/core/kernels/conv_ops_using_gemm.cc
+    // http://www.youtube.com/watch?v=pA4BsUK3oP4&t=36m22s
+    const tensor& filter_mats = filter_mat.filter_mats_;
+    const auto f_height = filter_mat.filter_shape_.height_;
+    const auto f_width = filter_mat.filter_shape_.width_;
+    const auto f_depth = filter_mat.filter_shape_.depth_;
+    const auto out_depth = filter_mat.filter_count_;
+
+    assertion(f_depth == in.shape().depth_, "filter depth does not match input");
+    assertion(filter_mats.shape().size_dim_4_ == f_height, "incorrect number of filter levels in y direction");
+    assertion(out_width == (in.shape().width_ - f_width) / strides_x + 1, "output width does not match");
+    assertion(out_depth == filter_mat.biases_.size(), "invlid bias count");
+
+    tensor output = init_conv_output_tensor(out_height, out_width, out_depth, in.shape().rank(), filter_mat);
+
     for (std::size_t y_filt = 0; y_filt < f_height; ++y_filt)
     {
-        const MappedColMajorMatrixXfUnaligned
+        const Eigen::Map<ColMajorMatrixXf, Eigen::Unaligned>
             filter(const_cast<float_type*>(&filter_mats.get_ref_ignore_rank(tensor_pos(0, y_filt, 0, 0, 0))),
                 static_cast<EigenIndex>(out_depth),
                 static_cast<EigenIndex>(f_width * f_depth));
@@ -126,13 +156,8 @@ inline tensor convolve_accumulative(
         // so currently it's multiple smaller GEMMs.
         for (std::size_t y = 0, y_out = 0; y < in.shape().height_ + 1 - f_height; y += strides_y, ++y_out)
         {
-            const MappedColMajorMatrixXfUnalignedOuterStride
-                input(const_cast<float_type*>(&in.get_ref_ignore_rank(tensor_pos(0, 0, y + y_filt, 0, 0))),
-                    static_cast<EigenIndex>(f_width * f_depth),
-                    static_cast<EigenIndex>(out_width),
-                    Eigen::OuterStride<>(static_cast<EigenIndex>(f_depth * strides_x)));
-            
-            MappedColMajorMatrixXfUnaligned
+            const auto input = get_im2col_mapping(in, f_width, f_depth, strides_x, out_width, y, y_filt);
+            Eigen::Map<ColMajorMatrixXf, Eigen::Unaligned>
                 output_map(&output.get_ref_ignore_rank(tensor_pos(0, 0, y_out, 0, 0)),
                     static_cast<EigenIndex>(out_depth),
                     static_cast<EigenIndex>(out_width));
@@ -240,9 +265,6 @@ inline tensor convolve(
         filter_mat.filter_shape_.without_depth(),
         strides, pad_type, input.shape().height_, input.shape().width_);
 
-    const std::size_t out_height = conv_cfg.out_height_;
-    const std::size_t out_width = conv_cfg.out_width_;
-
     // The padding step usually (on a VGG19 net) only takes about 1% of the overall runtime.
     // So the increased code complexity of doing it inside the convolution step
     // is probably not worth the small potential performance gain.
@@ -251,7 +273,7 @@ inline tensor convolve(
         input);
 
     return convolve_accumulative(
-        out_height, out_width,
+        conv_cfg.out_height_, conv_cfg.out_width_,
         strides.height_, strides.width_,
         filter_mat,
         in_padded);

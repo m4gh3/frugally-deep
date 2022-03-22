@@ -33,6 +33,7 @@ Would you like to build/train a model using Keras/Python? And would you like to 
 * re-implements a (small) subset of TensorFlow, i.e., the operations needed to support prediction.
 * results in a much smaller binary size than linking against TensorFlow.
 * works out-of-the-box also when compiled into a 32-bit executable. (Of course, 64 bit is fine too.)
+* avoids temporarily allocating (potentially large chunks of) additional RAM during convolutions (by not materializing the im2col input matrix).
 * utterly ignores even the most powerful GPU in your system and uses only one CPU core per prediction. ;-)
 * but is quite fast on one CPU core [compared to TensorFlow](#performance), and you can run multiple predictions in parallel, thus utilizing as many CPUs as you like to improve the overall prediction throughput of your application/pipeline.
 
@@ -154,23 +155,23 @@ Below you can find the average durations of multiple consecutive forward passes 
 
 | Model             | Keras + TF | frugally-deep |
 | ----------------- | ----------:| -------------:|
-| `DenseNet121`     |     0.12 s |        0.26 s |
-| `DenseNet169`     |     0.14 s |        0.32 s |
-| `DenseNet201`     |     0.16 s |        0.44 s |
-| `InceptionV3`     |     0.17 s |        0.33 s |
-| `MobileNet`       |     0.05 s |        0.15 s |
-| `MobileNetV2`     |     0.05 s |        0.16 s |
-| `NASNetLarge`     |     0.85 s |        3.68 s |
-| `NASNetMobile`    |     0.09 s |        0.29 s |
-| `ResNet101`       |     0.23 s |        0.48 s |
-| `ResNet101V2`     |     0.21 s |        0.44 s |
-| `ResNet152`       |     0.32 s |        0.71 s |
-| `ResNet152V2`     |     0.30 s |        0.67 s |
-| `ResNet50`        |     0.14 s |        0.27 s |
-| `ResNet50V2`      |     0.12 s |        0.23 s |
-| `VGG16`           |     0.41 s |        0.49 s |
-| `VGG19`           |     0.50 s |        0.61 s |
-| `Xception`        |     0.25 s |        1.07 s |
+| `DenseNet121`     |     0.12 s |        0.28 s |
+| `DenseNet169`     |     0.14 s |        0.36 s |
+| `DenseNet201`     |     0.16 s |        0.49 s |
+| `InceptionV3`     |     0.17 s |        0.36 s |
+| `MobileNet`       |     0.05 s |        0.07 s |
+| `MobileNetV2`     |     0.05 s |        0.07 s |
+| `NASNetLarge`     |     0.85 s |        2.45 s |
+| `NASNetMobile`    |     0.09 s |        0.13 s |
+| `ResNet101`       |     0.23 s |        0.52 s |
+| `ResNet101V2`     |     0.21 s |        0.49 s |
+| `ResNet152`       |     0.32 s |        0.78 s |
+| `ResNet152V2`     |     0.30 s |        0.71 s |
+| `ResNet50`        |     0.14 s |        0.31 s |
+| `ResNet50V2`      |     0.12 s |        0.25 s |
+| `VGG16`           |     0.41 s |        0.53 s |
+| `VGG19`           |     0.50 s |        0.66 s |
+| `Xception`        |     0.25 s |        0.65 s |
 
 Requirements and Installation
 -----------------------------
